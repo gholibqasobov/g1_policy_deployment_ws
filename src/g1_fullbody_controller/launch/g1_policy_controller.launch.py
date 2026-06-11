@@ -16,6 +16,7 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node
+from launch_ros.descriptions import ParameterValue
 from launch.substitutions import (
     LaunchConfiguration,
     IfElseSubstitution,
@@ -32,13 +33,22 @@ def generate_launch_description():
     )
     return LaunchDescription([
         DeclareLaunchArgument(
-            "publish_period_ms",
-            default_value="5",
-            description="publishing dt in milliseconds"),
-        DeclareLaunchArgument(
             "policy_path",
             default_value=policy_path,
-            description="path to the policy file"),
+            description="path to the exported TorchScript policy (policy_metadata.json must sit beside it, "
+                        "or set metadata_path)"),
+        DeclareLaunchArgument(
+            "metadata_path",
+            default_value="",
+            description="path to policy_metadata.json (default: <policy dir>/policy_metadata.json)"),
+        DeclareLaunchArgument(
+            "decimation",
+            default_value="1",
+            description="run the policy every Nth tick; with 50 Hz sensors, 1 -> 50 Hz control"),
+        DeclareLaunchArgument(
+            "odom_twist_in_body_frame",
+            default_value="True",
+            description="True if /odom twist is in the body frame (REP-103); False to rotate from world"),
         DeclareLaunchArgument(
             "use_sim_time",
             default_value="True",
@@ -62,10 +72,13 @@ def generate_launch_description():
                 [TextSubstitution(text='')]
             ),
             parameters=[{
-                'publish_period_ms': LaunchConfiguration('publish_period_ms'),
                 'policy_path': LaunchConfiguration('policy_path'),
-                "use_sim_time": LaunchConfiguration('use_sim_time'),
+                'metadata_path': LaunchConfiguration('metadata_path'),
+                'decimation': ParameterValue(LaunchConfiguration('decimation'), value_type=int),
+                'odom_twist_in_body_frame': ParameterValue(
+                    LaunchConfiguration('odom_twist_in_body_frame'), value_type=bool),
+                "use_sim_time": ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),
             }]
-            
+
         ),
     ])
