@@ -59,7 +59,7 @@ class G1FullbodyController(Node):
         self.declare_parameter('decimation', 1)
         # warmup: before running the policy, drive the robot to the policy's default joint pose so the
         # first observation is in-distribution. seconds to hold/ease into default (0 disables warmup).
-        self.declare_parameter('warmup_sec', 2.0)
+        self.declare_parameter('warmup_sec', 0.0)
         # if True, interpolate from the measured spawn pose to default over warmup_sec (no violent snap);
         # if False, command the default pose immediately.
         self.declare_parameter('warmup_interpolate', True)

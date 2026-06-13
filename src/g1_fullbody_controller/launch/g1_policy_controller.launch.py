@@ -51,7 +51,7 @@ def generate_launch_description():
             description="True if /odom twist is in the body frame (REP-103); False to rotate from world"),
         DeclareLaunchArgument(
             "warmup_sec",
-            default_value="2.0",
+            default_value="0.0",
             description="seconds to ease the robot into the policy's default pose before engaging it "
                         "(0 disables)"),
         DeclareLaunchArgument(
