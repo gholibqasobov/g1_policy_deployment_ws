@@ -1,8 +1,14 @@
 # G1 policy — standalone Isaac Sim deployment scripts
 
-Two self-contained Isaac Sim 5.0 scripts for deploying the trained G1 PPO walking policy
-(`Template-G1-Locomotion-v0`, 37 DoF). Both launch with a plain `python script.py` once the Isaac Sim
+Three self-contained Isaac Sim 5.0 scripts for deploying the trained G1 PPO walking policy
+(`Template-G1-Locomotion-v0`, 37 DoF). Each launches with a plain `python script.py` once the Isaac Sim
 conda env is active — no `python.sh`, no ROS sourcing.
+
+| Script | Policy runs | ROS | Use it for |
+|--------|-------------|-----|------------|
+| `g1_policy_standalone.py` | in Isaac (in-process) | no | quickest check that the policy walks |
+| `g1_controller_ros_standalone.py` | your controller, in-process | yes (all-in-one) | the full ROS path in one command |
+| `g1_robot_standalone.py` | **separate process** (launch file) | yes (sim = robot only) | real-robot-style deployment dev |
 
 ```bash
 conda activate env_isaaclab
@@ -69,7 +75,48 @@ import time; t=Twist(); t.linear.x=0.5; \
 (or run `teleop_twist_keyboard` from a system-ROS terminal — DDS bridges the two regardless of Python
 version, as long as the `ROS_DOMAIN_ID` matches.)
 
-## Anatomy of `g1_controller_ros_standalone.py` — recreate it yourself in GUI mode
+## 3. `g1_robot_standalone.py` — the simulated robot (policy runs separately)
+
+This script is the **robot hardware**, not the whole system: it spawns the G1 + environment and exposes
+the same ROS 2 interface a real G1 would — publishes `/joint_states /imu /odom /clock`, subscribes
+`/joint_command` — and **runs no policy**. You deploy the policy separately with the existing controller
+launch file, in its own process, exactly as you would against real hardware. This is the stepping stone
+to real-robot deployment.
+
+The simulated robot **stands frozen** in the trained crouch (base pinned) from spawn until the first
+`/joint_command` arrives, then releases — so it won't fall while you start the controller.
+
+```bash
+# Terminal 1 — simulated robot (Isaac, conda env):
+conda activate env_isaaclab
+python g1_robot_standalone.py                 # GUI window (or --headless)
+
+# Terminal 2 — the policy controller, real-robot style (its own process, system ROS 2 Humble):
+source /opt/ros/humble/setup.bash
+source ~/g1_policy_deployment_ws/install/setup.bash
+ros2 launch g1_fullbody_controller g1_policy_controller.launch.py \
+    policy_path:=$HOME/g1_locomotion/logs/rsl_rl/g1_locomotion_ppo/2026-06-10_21-48-08/exported/policy.pt \
+    use_sim_time:=True odom_twist_in_body_frame:=True
+
+# Terminal 3 — drive it:
+source /opt/ros/humble/setup.bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard      # -> /cmd_vel
+```
+
+Why this works across two Python versions: the sim uses Isaac's **bundled py3.11 rclpy**, the controller
+uses **system py3.10 rclpy** (which has `torch` + `rclpy` installed) — they talk over DDS. Requirements:
+
+- Both must share `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` and the same `ROS_DOMAIN_ID`. The sim inherits
+  these from its shell; Isaac's bundle ships cyclonedds, so they match out of the box here.
+- Keep `odom_twist_in_body_frame:=True` — the bridge publishes body-frame `/odom`. (If you instead wire
+  the sim to a *world*-frame odometry, set it `:=False` and the controller rotates it itself.)
+- Override `policy_path` to the real exported `policy.pt` (its `policy_metadata.json` sits beside it); the
+  launch default points at the package-share `policy/g1_policy.pt`. The controller's own `warmup_sec`
+  (default 2 s) eases into the default pose after the base-pin releases.
+
+The topics, frames, and robot config are identical to script 2 — see the anatomy section below.
+
+## Anatomy of `g1_controller_ros_standalone.py` / `g1_robot_standalone.py` — recreate it yourself in GUI mode
 
 This documents exactly what the script builds, so you can rebuild the same setup by hand (e.g. with
 OmniGraph ROS2 Action Graph nodes) in the Isaac Sim GUI and run your controller against it.
