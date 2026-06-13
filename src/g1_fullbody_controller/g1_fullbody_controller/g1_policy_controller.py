@@ -57,6 +57,12 @@ class G1FullbodyController(Node):
         self.declare_parameter('metadata_path', '')
         # run the policy every Nth synchronized tick. With 50 Hz sensors, decimation=1 -> 50 Hz control.
         self.declare_parameter('decimation', 1)
+        # warmup: before running the policy, drive the robot to the policy's default joint pose so the
+        # first observation is in-distribution. seconds to hold/ease into default (0 disables warmup).
+        self.declare_parameter('warmup_sec', 2.0)
+        # if True, interpolate from the measured spawn pose to default over warmup_sec (no violent snap);
+        # if False, command the default pose immediately.
+        self.declare_parameter('warmup_interpolate', True)
         # nav_msgs/Odometry twist convention. REP-103 says twist is in the child (body) frame -> True.
         # If Isaac publishes the base velocity in the world frame, set this False to rotate it in.
         self.declare_parameter('odom_twist_in_body_frame', True)
@@ -74,6 +80,8 @@ class G1FullbodyController(Node):
 
         self._decimation = int(self.get_parameter('decimation').value)
         self._odom_in_body = bool(self.get_parameter('odom_twist_in_body_frame').value)
+        self._warmup_sec = float(self.get_parameter('warmup_sec').value)
+        self._warmup_interp = bool(self.get_parameter('warmup_interpolate').value)
 
         # ---- policy + metadata ----------------------------------------------------------------------
         self.policy_path = self.get_parameter('policy_path').value
@@ -111,10 +119,15 @@ class G1FullbodyController(Node):
         self._previous_action = np.zeros(self.num_joints)
         self.action = np.zeros(self.num_joints)
         self._policy_counter = 0
+        # warmup state: ease the robot into the default pose before engaging the policy
+        self._first_tick_time = None
+        self._warmup_start_pos = None
+        self._warmed_up = self._warmup_sec <= 0.0
 
         self._logger.info(
             f"G1FullbodyController ready: {self.num_joints} joints, obs_dim={self.obs_dim}, "
-            f"action_scale={self.action_scale}, decimation={self._decimation}")
+            f"action_scale={self.action_scale}, decimation={self._decimation}, "
+            f"warmup_sec={self._warmup_sec}")
 
     # ---- loading -----------------------------------------------------------------------------------
 
@@ -160,17 +173,53 @@ class G1FullbodyController(Node):
         self._odom_lin_vel_w = np.array([v.x, v.y, v.z])
 
     def _tick(self, joint_state: JointState, imu: Imu):
-        """Run one control step from synchronized joint state + IMU."""
-        self.forward(joint_state, imu)
+        """Run one control step from synchronized joint state + IMU.
 
+        On startup, hold/ease the robot into the policy's default joint pose for ``warmup_sec``
+        so the first real observation is in-distribution, then engage the policy.
+        """
+        now = self.get_clock().now()
+        if self._first_tick_time is None:
+            self._first_tick_time = now
+            self._warmup_start_pos = self._map_joint_pos(joint_state)
+
+        if not self._warmed_up:
+            elapsed = (now - self._first_tick_time).nanoseconds * 1e-9
+            if elapsed < self._warmup_sec:
+                # hold last_action at zero so the policy's first obs sees a clean reset state
+                self.action = np.zeros(self.num_joints)
+                self._previous_action = np.zeros(self.num_joints)
+                if self._warmup_interp and self._warmup_start_pos is not None:
+                    alpha = min(elapsed / self._warmup_sec, 1.0)
+                    target = (1.0 - alpha) * self._warmup_start_pos + alpha * self.default_pos
+                else:
+                    target = self.default_pos
+                self._publish(target)
+                return
+            self._warmed_up = True
+            self._logger.info("Warmup complete; engaging policy.")
+
+        self.forward(joint_state, imu)
+        # JointPositionActionCfg: target = default + scale * action
+        self._publish(self.default_pos + self.action * self.action_scale)
+
+    def _publish(self, positions: np.ndarray):
+        """Publish a 37-joint position target in policy order."""
         self._joint_command.header.stamp = self.get_clock().now().to_msg()
         self._joint_command.name = self.joint_names
-        # JointPositionActionCfg: target = default + scale * action
-        action_pos = self.default_pos + self.action * self.action_scale
-        self._joint_command.position = action_pos.tolist()
+        self._joint_command.position = positions.tolist()
         self._joint_command.velocity = np.zeros(self.num_joints).tolist()
         self._joint_command.effort = np.zeros(self.num_joints).tolist()
         self._joint_publisher.publish(self._joint_command)
+
+    def _map_joint_pos(self, joint_state: JointState) -> np.ndarray:
+        """Map an incoming ``joint_states`` message into policy joint order (by name)."""
+        joint_pos = self.default_pos.copy()
+        for src_idx, name in enumerate(joint_state.name):
+            dst = self._name_to_policy_idx.get(name)
+            if dst is not None:
+                joint_pos[dst] = joint_state.position[src_idx]
+        return joint_pos
 
     # ---- policy ------------------------------------------------------------------------------------
 
@@ -192,15 +241,12 @@ class G1FullbodyController(Node):
         cmd_vel = np.array([self._cmd_vel.linear.x, self._cmd_vel.linear.y, self._cmd_vel.angular.z])
 
         # map incoming joint_states (any order) into the policy's joint order
-        joint_pos = np.zeros(self.num_joints)
+        joint_pos = self._map_joint_pos(joint_state)
         joint_vel = np.zeros(self.num_joints)
-        names = joint_state.name
-        for src_idx, name in enumerate(names):
+        for src_idx, name in enumerate(joint_state.name):
             dst = self._name_to_policy_idx.get(name)
-            if dst is not None:
-                joint_pos[dst] = joint_state.position[src_idx]
-                if src_idx < len(joint_state.velocity):
-                    joint_vel[dst] = joint_state.velocity[src_idx]
+            if dst is not None and src_idx < len(joint_state.velocity):
+                joint_vel[dst] = joint_state.velocity[src_idx]
 
         obs = np.zeros(self.obs_dim)
         n = self.num_joints

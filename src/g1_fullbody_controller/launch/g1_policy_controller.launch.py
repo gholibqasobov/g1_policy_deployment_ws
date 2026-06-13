@@ -50,6 +50,15 @@ def generate_launch_description():
             default_value="True",
             description="True if /odom twist is in the body frame (REP-103); False to rotate from world"),
         DeclareLaunchArgument(
+            "warmup_sec",
+            default_value="2.0",
+            description="seconds to ease the robot into the policy's default pose before engaging it "
+                        "(0 disables)"),
+        DeclareLaunchArgument(
+            "warmup_interpolate",
+            default_value="True",
+            description="interpolate from the measured spawn pose to default over warmup_sec (no snap)"),
+        DeclareLaunchArgument(
             "use_sim_time",
             default_value="True",
             description="Use simulation (Omniverse Isaac Sim) clock if true"),
@@ -77,6 +86,9 @@ def generate_launch_description():
                 'decimation': ParameterValue(LaunchConfiguration('decimation'), value_type=int),
                 'odom_twist_in_body_frame': ParameterValue(
                     LaunchConfiguration('odom_twist_in_body_frame'), value_type=bool),
+                'warmup_sec': ParameterValue(LaunchConfiguration('warmup_sec'), value_type=float),
+                'warmup_interpolate': ParameterValue(
+                    LaunchConfiguration('warmup_interpolate'), value_type=bool),
                 "use_sim_time": ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),
             }]
 
